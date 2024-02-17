@@ -12,6 +12,7 @@ import {
   isRoundAction,
 } from "./actions";
 import { GameState, getClueValue, getNumCluesInBoard, State } from "./state";
+import { cyrb53 } from "../utils";
 
 enableMapSet();
 
@@ -43,34 +44,45 @@ export const CLUE_TIMEOUT_MS = 5000;
  * on this clue. */
 export const CANT_BUZZ_FLAG = -1;
 
-export function getWinningBuzzer(buzzes: Map<string, number>):
-  | {
-      userId: string;
-      deltaMs: number;
-    }
-  | undefined {
-  const result = Array.from(buzzes.entries())
-    // Sort buzzes by user ID for deterministic results in case of a tie.
-    .sort(([aUserId], [bUserId]) => (aUserId > bUserId ? 1 : -1))
-    .reduce(
-      (acc, [userId, deltaMs]) => {
-        if (
-          deltaMs !== CANT_BUZZ_FLAG &&
-          deltaMs < acc.deltaMs &&
-          deltaMs <= CLUE_TIMEOUT_MS
-        ) {
-          return { userId, deltaMs };
-        }
-        return acc;
-      },
-      { userId: "", deltaMs: Number.MAX_SAFE_INTEGER },
-    );
 
-  if (result.userId === "") {
+function isValidBuzz(deltaMs: number): boolean {
+  return deltaMs !== CANT_BUZZ_FLAG && deltaMs <= CLUE_TIMEOUT_MS;
+}
+
+/** getWinningBuzzer returns undefined if there were no valid buzzes. */
+export function getWinningBuzzer(buzzes: Map<string, number>, tiebreakerSeed?: string):
+  | {
+    userId: string;
+    deltaMs: number;
+  }
+  | undefined {
+
+  const validBuzzes = Array.from(buzzes.entries()).filter(
+    ([, deltaMs]) => isValidBuzz(deltaMs),
+  );
+
+  if (validBuzzes.length === 0) {
     return undefined;
   }
 
-  return result;
+  const quantizedBuzzes: [string, number][] = validBuzzes.map(([userId, deltaMs]) => [
+    userId,
+    Math.floor(deltaMs / 100),
+  ]);
+
+  const sortedBuzzes = quantizedBuzzes.sort(([aUserId, deltaA], [bUserId, deltaB]) => {
+    // In the case of a tie, use user ID and an arbitrary text "seed" to break ties.
+    if (deltaA === deltaB) {
+      const tiebreakerA = cyrb53(tiebreakerSeed ?? "t") + cyrb53(aUserId);
+      const tiebreakerB = cyrb53(tiebreakerSeed ?? "t") + cyrb53(bUserId);
+      return tiebreakerA - tiebreakerB;
+    } else {
+      return deltaA - deltaB;
+    }
+  });
+
+  const [userId, deltaMs] = sortedBuzzes[0];
+  return { userId, deltaMs };
 }
 
 /** getHighestClueValue gets the highest clue value on the board. */
@@ -190,15 +202,15 @@ export function gameEngine(state: State, action: Action): State {
           const allPlayers = Array.from(draft.players.entries());
           const buzzes = clue.longForm
             ? new Map(
-                allPlayers
-                  .filter(([, p]) => p.score <= 0)
-                  .map(([pUserId]) => [pUserId, CANT_BUZZ_FLAG]),
-              )
+              allPlayers
+                .filter(([, p]) => p.score <= 0)
+                .map(([pUserId]) => [pUserId, CANT_BUZZ_FLAG]),
+            )
             : new Map(
-                allPlayers
-                  .filter(([pUserId]) => pUserId !== draft.boardControl)
-                  .map(([pUserId]) => [pUserId, CANT_BUZZ_FLAG]),
-              );
+              allPlayers
+                .filter(([pUserId]) => pUserId !== draft.boardControl)
+                .map(([pUserId]) => [pUserId, CANT_BUZZ_FLAG]),
+            );
 
           const numExpectedWagers = draft.players.size - buzzes.size;
           // If no player has enough points to wager, just show the clue.
