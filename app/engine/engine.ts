@@ -65,17 +65,24 @@ export function getWinningBuzzer(buzzes: Map<string, number>, tiebreakerSeed?: s
     return undefined;
   }
 
-  const quantizedBuzzes: [string, number][] = validBuzzes.map(([userId, deltaMs]) => [
+  // generate 53-bit hash, discard MSBs to get 32-bit unsigned
+  const tiebreakSeed32 = cyrb53(tiebreakerSeed ?? "t") >>> 0;
+
+  // Quantize valid buzzer times and add random tiebreakers
+  const quantizationFactor = 150;
+  const quantizedBuzzes: [string, number, number][] = validBuzzes.map(([userId, deltaMs]) => [
     userId,
-    Math.floor(deltaMs / 100),
+    Math.floor(deltaMs / quantizationFactor),
+    cyrb53(userId, tiebreakSeed32),
   ]);
 
-  const sortedBuzzes = quantizedBuzzes.sort(([aUserId, deltaA], [bUserId, deltaB]) => {
-    // In the case of a tie, use user ID and an arbitrary text "seed" to break ties.
+  quantizedBuzzes.forEach(([userId, qDeltaMs, tiebreak], index) => {
+    console.log(`User: ${userId}, Raw: ${validBuzzes[index][1]}, Quantized: ${qDeltaMs}, Tiebreaker: ${tiebreak}`);
+  });
+
+  const sortedBuzzes = quantizedBuzzes.sort(([aUserId, deltaA, tiebreakA], [bUserId, deltaB, tiebreakB]) => {
     if (deltaA === deltaB) {
-      const tiebreakerA = cyrb53(tiebreakerSeed ?? "t") + cyrb53(aUserId);
-      const tiebreakerB = cyrb53(tiebreakerSeed ?? "t") + cyrb53(bUserId);
-      return tiebreakerA - tiebreakerB;
+      return tiebreakA - tiebreakB;
     } else {
       return deltaA - deltaB;
     }
