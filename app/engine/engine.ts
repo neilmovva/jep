@@ -2,6 +2,7 @@ import { enableMapSet, produce } from "immer";
 
 import type { Board } from "~/models/convert.server";
 
+import { cyrb53 } from "../utils";
 import {
   isAnswerAction,
   isBuzzAction,
@@ -11,8 +12,7 @@ import {
   isPlayerAction,
   isRoundAction,
 } from "./actions";
-import { GameState, getClueValue, getNumCluesInBoard, State } from "./state";
-import { cyrb53 } from "../utils";
+import { GameState, State, getClueValue, getNumCluesInBoard } from "./state";
 
 enableMapSet();
 
@@ -47,21 +47,22 @@ export const CANT_BUZZ_FLAG = -1;
 // Buzzes within this many milliseconds of each other are treated as ties.
 export const QUANTIZATION_FACTOR_MS = 150;
 
-
 function isValidBuzz(deltaMs: number): boolean {
   return deltaMs !== CANT_BUZZ_FLAG && deltaMs <= CLUE_TIMEOUT_MS;
 }
 
 /** getWinningBuzzer returns undefined if there were no valid buzzes. */
-export function getWinningBuzzer(buzzes: Map<string, number>, tiebreakerSeed?: string):
+export function getWinningBuzzer(
+  buzzes: Map<string, number>,
+  tiebreakerSeed?: string,
+):
   | {
-    userId: string;
-    deltaMs: number;
-  }
+      userId: string;
+      deltaMs: number;
+    }
   | undefined {
-
-  const validBuzzes = Array.from(buzzes.entries()).filter(
-    ([, deltaMs]) => isValidBuzz(deltaMs),
+  const validBuzzes = Array.from(buzzes.entries()).filter(([, deltaMs]) =>
+    isValidBuzz(deltaMs),
   );
 
   if (validBuzzes.length === 0) {
@@ -69,33 +70,41 @@ export function getWinningBuzzer(buzzes: Map<string, number>, tiebreakerSeed?: s
   }
 
   // generate 53-bit hash, discard MSBs to get 32-bit unsigned
-  if (tiebreakerSeed === undefined ) {
+  if (tiebreakerSeed === undefined) {
     tiebreakerSeed = "t";
-    console.log("WARN: tiebreakerSeed is undefined, ties will be broken in fixed user order.");
+    console.log(
+      "WARN: tiebreakerSeed is undefined, ties will be broken in fixed user order.",
+    );
   }
   const tiebreakSeed32 = cyrb53(tiebreakerSeed) >>> 0;
 
   const minDeltaMs = Math.min(...validBuzzes.map(([, deltaMs]) => deltaMs));
 
-  const quantizedBuzzes: [string, number, number][] = validBuzzes.map(([userId, deltaMs]) => [
-    userId,
-    // measure every buzz relative to the fastest one, and round to the quantization interval
-    Math.floor(Math.max(0, deltaMs - minDeltaMs) / QUANTIZATION_FACTOR_MS),
-    // random number derived from user ID and per-contest seed, to break ties 
-    cyrb53(userId, tiebreakSeed32),
-  ]);
+  const quantizedBuzzes: [string, number, number][] = validBuzzes.map(
+    ([userId, deltaMs]) => [
+      userId,
+      // measure every buzz relative to the fastest one, and round to the quantization interval
+      Math.floor(Math.max(0, deltaMs - minDeltaMs) / QUANTIZATION_FACTOR_MS),
+      // random number derived from user ID and per-contest seed, to break ties
+      cyrb53(userId, tiebreakSeed32),
+    ],
+  );
 
   quantizedBuzzes.forEach(([userId, qDeltaMs, tiebreak], index) => {
-    console.log(`User: ${userId}, Raw: ${validBuzzes[index][1]}, Quantized: ${qDeltaMs}, Tiebreaker: ${tiebreak}`);
+    console.log(
+      `User: ${userId}, Raw: ${validBuzzes[index][1]}, Quantized: ${qDeltaMs}, Tiebreaker: ${tiebreak}`,
+    );
   });
 
-  const sortedBuzzes = quantizedBuzzes.sort(([aUserId, deltaA, tiebreakA], [bUserId, deltaB, tiebreakB]) => {
-    if (deltaA === deltaB) {
-      return tiebreakA - tiebreakB;
-    } else {
-      return deltaA - deltaB;
-    }
-  });
+  const sortedBuzzes = quantizedBuzzes.sort(
+    ([aUserId, deltaA, tiebreakA], [bUserId, deltaB, tiebreakB]) => {
+      if (deltaA === deltaB) {
+        return tiebreakA - tiebreakB;
+      } else {
+        return deltaA - deltaB;
+      }
+    },
+  );
 
   const [userId, deltaMs] = sortedBuzzes[0];
   return { userId, deltaMs };
@@ -218,15 +227,15 @@ export function gameEngine(state: State, action: Action): State {
           const allPlayers = Array.from(draft.players.entries());
           const buzzes = clue.longForm
             ? new Map(
-              allPlayers
-                .filter(([, p]) => p.score <= 0)
-                .map(([pUserId]) => [pUserId, CANT_BUZZ_FLAG]),
-            )
+                allPlayers
+                  .filter(([, p]) => p.score <= 0)
+                  .map(([pUserId]) => [pUserId, CANT_BUZZ_FLAG]),
+              )
             : new Map(
-              allPlayers
-                .filter(([pUserId]) => pUserId !== draft.boardControl)
-                .map(([pUserId]) => [pUserId, CANT_BUZZ_FLAG]),
-            );
+                allPlayers
+                  .filter(([pUserId]) => pUserId !== draft.boardControl)
+                  .map(([pUserId]) => [pUserId, CANT_BUZZ_FLAG]),
+              );
 
           const numExpectedWagers = draft.players.size - buzzes.size;
           // If no player has enough points to wager, just show the clue.
@@ -328,13 +337,14 @@ export function gameEngine(state: State, action: Action): State {
           return;
         }
 
-        const winningBuzzer = getWinningBuzzer(draft.buzzes, draft.clue?.clue);
+        const board = draft.game.boards.at(draft.round);
+        const clue = board?.categories.at(j)?.clues.at(i);
+
+        const winningBuzzer = getWinningBuzzer(draft.buzzes, clue?.clue);
         if (!winningBuzzer) {
           // Reveal the answer to everyone and mark it as answered. If the clue
           // was wagerable and the player didn't buzz, deduct their wager from
           // their score.
-          const board = draft.game.boards.at(draft.round);
-          const clue = board?.categories.at(j)?.clues.at(i);
           if (clue?.wagerable) {
             const clueValue = getClueValue(draft, [i, j], userId);
             const player = draft.players.get(userId);
@@ -410,6 +420,10 @@ export function gameEngine(state: State, action: Action): State {
         }
         const isLongForm = draft.type === GameState.RevealAnswerLongForm;
 
+        const board = draft.game.boards.at(draft.round);
+        const clue = board?.categories.at(j)?.clues.at(i);
+        const clueText = clue?.clue;
+
         // Ignore the action if it was from a player who didn't answer the clue.
         const key = `${draft.round},${i},${j}`;
         if (isLongForm) {
@@ -418,7 +432,7 @@ export function gameEngine(state: State, action: Action): State {
             return;
           }
         } else {
-          const winningBuzzer = getWinningBuzzer(draft.buzzes, draft.clue?.clue);
+          const winningBuzzer = getWinningBuzzer(draft.buzzes, clueText);
           if (userId !== winningBuzzer?.userId) {
             return;
           }
